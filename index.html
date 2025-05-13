@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Packscanner</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
   <style>
     body {
@@ -75,8 +76,7 @@
   <button id="druckfreigabe" disabled>🖨️ Druckfreigabe</button>
 
   <script>
-    const SHEET_ID = "10KGIuXTYRoOYyCPEVapMO1mHcbQyIg_ZDhnXUU2-eTc";
-    const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json`;
+    const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ9KQVZ3URr_eQNk27XxvUA5qSUeB5hN0raMEIWvR5-14Jcua7FnbuLXDXkPrw19psnfDYx_3-KmNxM/pub?output=csv";
 
     let daten = [];
     let packlisten = {};
@@ -84,24 +84,14 @@
     let aktuellePackliste = null;
     let scannerGestartet = false;
 
-    function ladeGoogleSheetDaten() {
-      fetch(SHEET_URL)
-        .then(res => res.text())
-        .then(text => {
-          const json = JSON.parse(text.substring(47, text.length - 2));
-          const cols = json.table.cols.map(c => c.label.toLowerCase());
-
-          daten = json.table.rows.map(row => {
-            const obj = {};
-            row.c.forEach((cell, i) => {
-              obj[cols[i]] = cell ? cell.v : "";
-            });
-            return obj;
-          });
-
-          parseDaten();
-        });
-    }
+    Papa.parse(CSV_URL, {
+      download: true,
+      header: true,
+      complete: function(results) {
+        daten = results.data;
+        parseDaten();
+      }
+    });
 
     function parseDaten() {
       artikelDaten = [];
@@ -117,7 +107,7 @@
           sku: row.sku,
           ean: row.ean,
           produktname: row.produktname,
-          menge: parseInt(row.menge),
+          menge: parseInt(row.menge) || 1,
           scan_erledigt: false
         });
       });
@@ -127,6 +117,73 @@
     function renderPacklistenSelect() {
       const select = document.getElementById("packlisteSelect");
       select.innerHTML = '<option value="">-- Packliste wählen --</option>';
-      const ids = [...new Set(artikelDaten.map(a => a.packliste_id))];
-      ids.forEach(id => {
+      Object.keys(packlisten).forEach(id => {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = `Packliste #${id} – ${packlisten[id].name}`;
+        select.appendChild(opt);
+      });
+    }
 
+    function renderArtikel() {
+      const liste = document.getElementById("artikel-liste");
+      liste.innerHTML = "";
+      const artikel = artikelDaten.filter(a => a.packliste_id === aktuellePackliste);
+      artikel.forEach(a => {
+        const div = document.createElement("div");
+        div.className = "item" + (a.scan_erledigt ? " erledigt" : "");
+        div.innerHTML = `<strong>${a.produktname}</strong><br><small>${a.menge}× SKU ${a.sku}</small>`;
+        liste.appendChild(div);
+      });
+      const allesErledigt = artikel.every(a => a.scan_erledigt);
+      document.getElementById("druckfreigabe").disabled = !allesErledigt;
+    }
+
+    function startScanner() {
+      if (scannerGestartet) return;
+      const container = document.getElementById("scanner-container");
+      container.style.display = "block";
+
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(stream => {
+          stream.getTracks().forEach(track => track.stop());
+
+          Quagga.init({
+            inputStream: {
+              name: "Live",
+              type: "LiveStream",
+              target: container,
+              constraints: { facingMode: "environment" }
+            },
+            decoder: { readers: ["ean_reader"] }
+          }, err => {
+            if (err) return console.error("Scanner Fehler:", err);
+            Quagga.start();
+            scannerGestartet = true;
+          });
+
+          Quagga.onDetected(result => {
+            const code = result.codeResult.code;
+            const match = artikelDaten.find(a => a.packliste_id === aktuellePackliste && a.ean === code && !a.scan_erledigt);
+            if (match) {
+              match.scan_erledigt = true;
+              renderArtikel();
+            }
+          });
+        })
+        .catch(error => {
+          alert("Kamerazugriff nicht möglich: " + error.message);
+        });
+    }
+
+    document.getElementById("start-scan").addEventListener("click", startScanner);
+    document.getElementById("druckfreigabe").addEventListener("click", () => {
+      alert(`Druckfreigabe für Packliste #${aktuellePackliste} erteilt!`);
+    });
+    document.getElementById("packlisteSelect").addEventListener("change", e => {
+      aktuellePackliste = e.target.value;
+      renderArtikel();
+    });
+  </script>
+</body>
+</html>
